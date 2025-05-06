@@ -1,8 +1,14 @@
 const pool = require("../config/db")
 const formidable = require('formidable');
-const { put } = require('@vercel/blob');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
+const cloudinary = require('cloudinary').v2;
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
 require('dotenv').config(); 
 
 // Get all complaints
@@ -147,13 +153,13 @@ exports.getComplaintById = async (req, res) => {
 
 
 exports.createComplaint = async (req, res) => {
-const form = new formidable.Formidable();
+  const form = new formidable.Formidable();
   form.multiples = true;
 
   form.parse(req, async (err, fields, files) => {
     if (err) {
       console.error('Form parsing error:', err);
-      return res.status(400).json({ message: 'Invalid form data' });
+      return res.status(400).json({ message: 'Error parsing form data' });
     }
 
     try {
@@ -161,19 +167,46 @@ const form = new formidable.Formidable();
         return res.status(403).json({ message: 'Access denied' });
       }
 
-      const {
-        customerName,
-        customerPhone,
-        channel,
-        inquiryType,
-        details,
-        attemptedResolution,
-        resolutionDetails,
-        forwardTo,
-      } = fields;
+      const customerName = fields.customerName?.[0] || "";
+const customerPhone = fields.customerPhone?.[0] || "";
+const channel = fields.channel?.[0] || "";
+const inquiryType = fields.inquiryType?.[0] || "";
+const details = fields.details?.[0] || "";
+const attemptedResolution = fields.attemptedResolution?.[0] === "1"; // or "true" if sent as string
+const resolutionDetails = fields.resolutionDetails?.[0] || "";
+const forwardTo = fields.forwardTo?.[0] || null;
 
-      if (!customerName || !customerPhone || !inquiryType || !details) {
-        return res.status(400).json({ message: 'Required fields are missing' });
+      // === Enhanced validation ===
+      if (
+        !customerName?.trim() ||
+        !customerPhone?.trim() ||
+        !inquiryType?.trim() ||
+        !details?.trim()
+      ) {
+        return res.status(400).json({ message: 'All required fields must be filled out.' });
+      }
+
+      // === File upload validation ===
+      const uploadedFiles = Array.isArray(files.files)
+        ? files.files
+        : files.files
+        ? [files.files]
+        : [];
+
+      if (uploadedFiles.length === 0) {
+        return res.status(400).json({ message: 'At least one attachment is required.' });
+      }
+
+      const maxFileSize = 10 * 1024 * 1024; // 10MB
+      const allowedTypes = ['image/png', 'image/jpeg', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+
+      for (const file of uploadedFiles) {
+        if (!allowedTypes.includes(file.mimetype)) {
+          return res.status(400).json({ message: `Unsupported file type: ${file.mimetype}` });
+        }
+        if (file.size > maxFileSize) {
+          return res.status(400).json({ message: `File too large: ${file.originalFilename}` });
+        }
       }
 
       let assignedTo;
@@ -181,7 +214,7 @@ const form = new formidable.Formidable();
       if (forwardTo) {
         const [departments] = await pool.query(
           'SELECT id FROM users WHERE department = ? AND role = "complaints_handler" LIMIT 1',
-          [forwardTo]
+          [forwardTo.trim()]
         );
 
         if (departments.length === 0) {
@@ -190,24 +223,18 @@ const form = new formidable.Formidable();
 
         assignedTo = departments[0].id;
       } else {
-        let department;
+  
+        const inquiryMap = {
+          'Technical Issue': 'IT Department',
+          'Forgotten Password': 'IT Department',
+          'Payment Delay': 'Funds Administration',
+          'Financial Transaction': 'Funds Administration',
+          'Repurchase Issue': 'Finance & Accounting',
+          'Financial Approval': 'Finance & Accounting',
+          
+        };
 
-        switch (inquiryType) {
-          case 'Technical Issue':
-          case 'Forgotten Password':
-            department = 'IT Department';
-            break;
-          case 'Payment Delay':
-          case 'Financial Transaction':
-            department = 'Funds Administration';
-            break;
-          case 'Repurchase Issue':
-          case 'Financial Approval':
-            department = 'Finance & Accounting';
-            break;
-          default:
-            department = 'IT Department';
-        }
+        const department = inquiryMap[inquiryType.trim()] || 'IT Department';
 
         const [handlers] = await pool.query(
           'SELECT id FROM users WHERE department = ? AND role = "complaints_handler" LIMIT 1',
@@ -215,70 +242,65 @@ const form = new formidable.Formidable();
         );
 
         if (handlers.length === 0) {
-          return res.status(400).json({ message: 'No handler found for this inquiry type' });
+          return res.status(400).json({ message: 'No handler available for this department.' });
         }
 
         assignedTo = handlers[0].id;
       }
 
+      
       const [result] = await pool.query(
         `INSERT INTO complaints (
-          customer_name, 
-          customer_phone, 
-          channel, 
-          inquiry_type, 
-          details, 
-          status, 
-          assigned_to, 
-          created_by, 
-          attempted_resolution, 
+          customer_name,
+          customer_phone,
+          channel,
+          inquiry_type,
+          details,
+          status,
+          assigned_to,
+          created_by,
+          attempted_resolution,
           resolution_details,
           forwarded_from
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          customerName,
-          customerPhone,
-          channel,
-          inquiryType,
-          details,
+          customerName.trim(),
+          customerPhone.trim(),
+          channel?.trim() || null,
+          inquiryType.trim(),
+          details.trim(),
           'Pending',
           assignedTo,
           req.user.id,
           attemptedResolution ? 1 : 0,
-          resolutionDetails || null,
+          resolutionDetails?.trim() || null,
           forwardTo ? req.user.id : null,
         ]
       );
 
       const complaintId = result.insertId;
-
-      // Handle file uploads via Vercel Blob
-      const uploadedFiles = Array.isArray(files.files)
-        ? files.files
-        : files.files
-        ? [files.files]
-        : [];
-
       for (const file of uploadedFiles) {
-        const fileStream = fs.createReadStream(file.filepath);
-        const blobName = `${uuidv4()}-${file.originalFilename}`;
-        const { url } = await put(blobName, fileStream, {
-          access: 'public',
-          token: process.env.VERCEL_BLOB_READ_WRITE_TOKEN,
+        const publicId = `complaints/${uuidv4()}-${file.originalFilename}`;
+      
+        const result = await cloudinary.uploader.upload(file.filepath, {
+          resource_type: "auto",
+          public_id: publicId,
         });
-
+      
+        const url = result.secure_url;
+      
         await pool.query(
           `INSERT INTO attachments (
-            complaint_id, 
-            filename, 
-            original_filename, 
-            file_type, 
+            complaint_id,
+            filename,
+            original_filename,
+            file_type,
             file_size,
             file_url
           ) VALUES (?, ?, ?, ?, ?, ?)`,
           [
             complaintId,
-            blobName,
+            publicId, // Use publicId instead of blobName
             file.originalFilename,
             file.mimetype,
             file.size,
@@ -286,33 +308,32 @@ const form = new formidable.Formidable();
           ]
         );
       }
+      
 
-      // Notify the assigned handler
       await pool.query(
         `INSERT INTO notifications (
-          user_id, 
-          title, 
-          message, 
-          type, 
+          user_id,
+          title,
+          message,
+          type,
           \`read\`
         ) VALUES (?, ?, ?, ?, ?)`,
         [
           assignedTo,
           'New Complaint Assigned',
-          `You have been assigned a new complaint from ${customerName} regarding ${inquiryType}.`,
+          `You have been assigned a new complaint from ${customerName.trim()} regarding ${inquiryType.trim()}.`,
           'assignment',
           0,
         ]
       );
 
-      // Get department for response
       const [handlerData] = await pool.query('SELECT department FROM users WHERE id = ?', [assignedTo]);
-      const assignedDepartment = handlerData[0].department;
 
       res.status(201).json({
         id: complaintId,
-        message: `Complaint registered successfully and forwarded to ${assignedDepartment}!`,
+        message: `Complaint registered successfully and forwarded to ${handlerData[0].department}.`,
       });
+
     } catch (error) {
       console.error('Create complaint error:', error);
       res.status(500).json({ message: 'Server error' });
@@ -320,90 +341,87 @@ const form = new formidable.Formidable();
   });
 };
 
-
-// Update complaint - 
 exports.updateComplaint = async (req, res) => {
   try {
-    const { id } = req.params
-    const { status, resolution } = req.body
+    const { id } = req.params;
+    const { status, resolution } = req.body;
 
-    // Validate input
+  
     if (!status) {
-      return res.status(400).json({ message: "Status is required" })
+      return res.status(400).json({ message: "Status is required" });
     }
 
     if (status === "Resolved" && !resolution) {
-      return res.status(400).json({ message: "Resolution details are required when status is Resolved" })
+      return res.status(400).json({ message: "Resolution details are required when status is Resolved" });
     }
 
-
-    const [complaints] = await pool.query("SELECT * FROM complaints WHERE id = ?", [id])
+    const [complaints] = await pool.query("SELECT * FROM complaints WHERE id = ?", [id]);
 
     if (complaints.length === 0) {
-      return res.status(404).json({ message: "Complaint not found" })
+      return res.status(404).json({ message: "Complaint not found" });
     }
 
-    const complaint = complaints[0]
+    const complaint = complaints[0];
 
-    // Check if user has access to update this complaint
+    // Access control
     if (
       req.user.role === "complaints_handler" &&
       complaint.assigned_to !== req.user.id &&
       req.user.role !== "admin" &&
       req.user.role !== "customer_relations_officer"
     ) {
-      return res.status(403).json({ message: "Access denied" })
+      return res.status(403).json({ message: "Access denied" });
     }
 
-    // Update complaint
-    await pool.query("UPDATE complaints SET status = ?, resolution = ?, updated_at = NOW() WHERE id = ?", [
-      status,
-      resolution || null,
-      id,
-    ])
+    // If CRO resolves directly, don't forward
+    if (req.user.role === "customer_relations_officer" && status === "Resolved") {
+      await pool.query(
+        `UPDATE complaints 
+         SET status = ?, resolution = ?, updated_at = NOW(), assigned_to = NULL 
+         WHERE id = ?`,
+        [status, resolution, id]
+      );
+    } else {
+      // Generic update (handlers/admins)
+      await pool.query(
+        `UPDATE complaints 
+         SET status = ?, resolution = ?, updated_at = NOW() 
+         WHERE id = ?`,
+        [status, resolution || null, id]
+      );
+    }
 
-    // Get user department for notification
-    const [userDetails] = await pool.query("SELECT department FROM users WHERE id = ?", [req.user.id])
+    // Notification logic
+    const [userDetails] = await pool.query("SELECT department FROM users WHERE id = ?", [req.user.id]);
+    const userDepartment = userDetails.length > 0 ? userDetails[0].department : "Department";
 
-    const userDepartment = userDetails.length > 0 ? userDetails[0].department : "Department"
-
-    // Create notification for the customer relations officer
     if (status === "Resolved") {
       await pool.query(
-        `INSERT INTO notifications (
-          user_id, 
-          title, 
-          message, 
-          type, 
-          \`read\`
-        ) VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO notifications (user_id, title, message, type, \`read\`) 
+         VALUES (?, ?, ?, ?, ?)`,
         [
           complaint.created_by,
           "Complaint Resolved",
           `Complaint #${id} has been resolved by ${userDepartment}.`,
           "resolution",
           0,
-        ],
-      )
+        ]
+      );
     } else if (status === "In Progress" && complaint.status === "Pending") {
       await pool.query(
-        `INSERT INTO notifications (
-          user_id, 
-          title, 
-          message, 
-          type, 
-          read
-        ) VALUES (?, ?, ?, ?, ?)`,
-        [complaint.created_by, "Complaint Updated", `Complaint #${id} status updated to In Progress.`, "update", 0],
-      )
+        `INSERT INTO notifications (user_id, title, message, type, \`read\`) 
+         VALUES (?, ?, ?, ?, ?)`,
+        [complaint.created_by, "Complaint Updated", `Complaint #${id} status updated to In Progress.`, "update", 0]
+      );
     }
 
-    res.json({ message: "Complaint updated successfully" })
+    res.json({ message: "Complaint updated successfully" });
   } catch (error) {
-    console.error("Update complaint error:", error)
-    res.status(500).json({ message: "Server error" })
+    console.error("Update complaint error:", error);
+    res.status(500).json({ message: "Server error" });
   }
-}
+};
+
 
 // Delete complaint (admin only)
 exports.deleteComplaint = async (req, res) => {

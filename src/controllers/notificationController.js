@@ -1,7 +1,6 @@
-
 const pool = require('../config/db');
 
-// Get all notifications for the current user
+
 exports.getNotifications = async (req, res) => {
   try {
     const [notifications] = await pool.query(
@@ -19,7 +18,7 @@ exports.getNotifications = async (req, res) => {
 // Mark all notifications as read
 exports.markAllAsRead = async (req, res) => {
   try {
-    await pool.query('UPDATE notifications SET read = 1 WHERE user_id = ?', [req.user.id]);
+    await pool.query('UPDATE notifications SET `read` = 1 WHERE user_id = ?', [req.user.id]);
 
     res.json({ message: 'All notifications marked as read' });
   } catch (error) {
@@ -43,7 +42,7 @@ exports.markAsRead = async (req, res) => {
       return res.status(404).json({ message: 'Notification not found' });
     }
 
-    await pool.query('UPDATE notifications SET read = 1 WHERE id = ?', [id]);
+    await pool.query('UPDATE notifications SET `read` = 1 WHERE id = ?', [id]);
 
     res.json({ message: 'Notification marked as read' });
   } catch (error) {
