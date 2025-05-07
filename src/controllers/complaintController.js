@@ -48,7 +48,6 @@ exports.getAllComplaints = async (req, res) => {
 
     const [complaints] = await pool.query(query, params)
 
-    // Now enrich each complaint with assignedToUser structure
     for (const complaint of complaints) {
       if (complaint.assigned_user_id) {
         complaint.assignedToUser = {
@@ -60,7 +59,6 @@ exports.getAllComplaints = async (req, res) => {
         complaint.assignedToUser = null
       }
 
-      // Clean up extra fields if desired
       delete complaint.assigned_user_id
       delete complaint.assigned_user_name
       delete complaint.assigned_user_department
@@ -109,7 +107,7 @@ exports.getComplaintById = async (req, res) => {
       return res.status(403).json({ message: "Access denied" })
     }
 
-    // Get attachments
+    
     const [attachments] = await pool.query(
       "SELECT id, filename, original_filename, file_type, file_size, file_url FROM attachments WHERE complaint_id = ?",
       [id],
@@ -280,15 +278,35 @@ const forwardTo = fields.forwardTo?.[0] || null;
 
       const complaintId = result.insertId;
       for (const file of uploadedFiles) {
-        const publicId = `complaints/${uuidv4()}-${file.originalFilename}`;
+        // Sanitize original filename and remove extension
+        const originalName = file.originalFilename.replace(/\.[^/.]+$/, '');
+        const ext = file.originalFilename.split('.').pop();
+      
+        // Generate public ID without double extension
+        const publicId = `complaints/${uuidv4()}-${originalName}`;
+      
+        // Set correct resource type based on MIME type
+        let resourceType = 'auto';
+        if (file.mimetype.startsWith('image/')) {
+          resourceType = 'image';
+        } else if (
+          file.mimetype === 'application/pdf' ||
+          file.mimetype === 'application/msword' ||
+          file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        ) {
+          resourceType = 'raw'; 
+        }
       
         const result = await cloudinary.uploader.upload(file.filepath, {
-          resource_type: "auto",
+          resource_type: resourceType,
           public_id: publicId,
+          use_filename: true,
+          unique_filename: false,
         });
       
         const url = result.secure_url;
       
+        // Save to database
         await pool.query(
           `INSERT INTO attachments (
             complaint_id,
@@ -300,13 +318,16 @@ const forwardTo = fields.forwardTo?.[0] || null;
           ) VALUES (?, ?, ?, ?, ?, ?)`,
           [
             complaintId,
-            publicId, // Use publicId instead of blobName
+            publicId,
             file.originalFilename,
             file.mimetype,
             file.size,
             url,
           ]
         );
+      
+        // Cleanup temp file
+        fs.unlinkSync(file.filepath);
       }
       
 
