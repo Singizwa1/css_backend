@@ -444,17 +444,17 @@ exports.updateComplaint = async (req, res) => {
 };
 
 
-// Delete complaint (admin only)
+
 exports.deleteComplaint = async (req, res) => {
   try {
     const { id } = req.params
 
     // Only admin can delete complaints
-    if (req.user.role !== "admin") {
+    if (!["admin", "customer_relations_officer"].includes(req.user.role)) {
       return res.status(403).json({ message: "Access denied" })
     }
 
-    // Check if complaint exists
+    
     const [complaints] = await pool.query("SELECT * FROM complaints WHERE id = ?", [id])
     if (complaints.length === 0) {
       return res.status(404).json({ message: "Complaint not found" })

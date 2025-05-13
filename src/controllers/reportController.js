@@ -105,3 +105,50 @@ exports.getDepartmentPerformance = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+exports.getWeeklyComplaints = async (req, res) => {
+  try {
+    const { range = "week", startDate, endDate } = req.query;
+
+    let query = `
+      SELECT 
+        c.id,
+        DATE(c.date) AS date,
+        c.customer_name AS customerName,
+        c.inquiry_type AS inquiryType,
+        c.status,
+        u.department AS assignedDepartment,
+        c.resolution
+      FROM complaints c
+      LEFT JOIN users u ON c.assigned_to = u.id
+      WHERE 1=1
+    `;
+
+    if (range === "custom" && startDate && endDate) {
+      query += ` AND DATE(c.date) BETWEEN ? AND ?`;
+    } else if (range === "week") {
+      query += ` AND DATE(c.date) >= CURDATE() - INTERVAL 7 DAY`;
+    } else if (range === "last_week") {
+      query += `
+        AND DATE(c.date) >= CURDATE() - INTERVAL 14 DAY
+        AND DATE(c.date) < CURDATE() - INTERVAL 7 DAY
+      `;
+    } else if (range === "month") {
+      query += ` AND YEAR(c.date) = YEAR(CURDATE()) AND MONTH(c.date) = MONTH(CURDATE())`;
+    } else if (range === "quarter") {
+      query += ` AND c.date >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)`;
+    } else if (range === "year") {
+      query += ` AND YEAR(c.date) = YEAR(CURDATE())`;
+    }
+
+    query += ` ORDER BY c.date DESC`;
+
+    const params = range === "custom" && startDate && endDate ? [startDate, endDate] : [];
+
+    const [results] = await pool.query(query, params);
+
+    res.json(results);
+  } catch (error) {
+    console.error("Failed to fetch complaints:", error);
+    res.status(500).json({ message: "Server error fetching complaints" });
+  }
+};

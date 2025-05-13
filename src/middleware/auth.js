@@ -18,7 +18,7 @@ const authenticateToken = (req, res, next) => {
   }
 };
 
-// Middleware to check if user is admin
+
 const isAdmin = (req, res, next) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ message: 'Access denied. Admin role required.' });
@@ -26,7 +26,7 @@ const isAdmin = (req, res, next) => {
   next();
 };
 
-// Middleware to check if user is customer relations officer
+
 const isCustomerRelationsOfficer = (req, res, next) => {
   if (req.user.role !== 'customer_relations_officer') {
     return res.status(403).json({ message: 'Access denied. Customer Relations Officer role required.' });
@@ -42,11 +42,19 @@ const isComplaintsHandler = (req, res, next) => {
   next();
 };
 
+const canDeleteComplaint = (req, res, next) => {
+  if (req.user.role === 'admin' || req.user.role === 'customer_relations_officer') {
+    return next();
+  }
+  return res.status(403).json({ message: 'Access denied. You are not allowed to delete complaints.' });
+};
+
 
 module.exports = {
   authenticateToken,
   isAdmin,
   isCustomerRelationsOfficer,
   isComplaintsHandler,
+  canDeleteComplaint,
   
 };
