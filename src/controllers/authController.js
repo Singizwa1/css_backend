@@ -7,15 +7,14 @@ const pool = require('../config/db');
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
-
     // Validate input
     if (!email || !password) {
       return res.status(400).json({ message: 'Email and password are required' });
     }
 
-    // Check if email ends with rnit.rw
-    if (!email.endsWith('rnit.rw')) {
-      return res.status(400).json({ message: 'Email must end with rnit.rw domain' });
+   
+    if (!email.endsWith('gmail.com')) {
+      return res.status(400).json({ message: 'Email must end with gmail.com domain' });
     }
 
     // Get user from database

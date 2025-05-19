@@ -3,6 +3,7 @@ const formidable = require('formidable');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const cloudinary = require('cloudinary').v2;
+const emailService = require("../utils/emailService");
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -11,14 +12,13 @@ cloudinary.config({
 
 require('dotenv').config(); 
 
-// Get all complaints
-// Get all complaints
+
 exports.getAllComplaints = async (req, res) => {
   try {
     let query = ""
     let params = []
 
-    // Filter based on user role
+    
     if (req.user.role === "customer_relations_officer") {
       query = `
         SELECT c.*, u.id AS assigned_user_id, u.name AS assigned_user_name, u.department AS assigned_user_department
@@ -166,25 +166,19 @@ exports.createComplaint = async (req, res) => {
       }
 
       const customerName = fields.customerName?.[0] || "";
-const customerPhone = fields.customerPhone?.[0] || "";
-const channel = fields.channel?.[0] || "";
-const inquiryType = fields.inquiryType?.[0] || "";
-const details = fields.details?.[0] || "";
-const attemptedResolution = fields.attemptedResolution?.[0] === "1"; // or "true" if sent as string
-const resolutionDetails = fields.resolutionDetails?.[0] || "";
-const forwardTo = fields.forwardTo?.[0] || null;
+      const customerPhone = fields.customerPhone?.[0] || "";
+      const channel = fields.channel?.[0] || "";
+      const inquiryType = fields.inquiryType?.[0] || "";
+      const details = fields.details?.[0] || "";
+      const attemptedResolution = fields.attemptedResolution?.[0] === "1";
+      const resolutionDetails = fields.resolutionDetails?.[0] || "";
+      const forwardTo = fields.forwardTo?.[0] || null;
 
-      // === Enhanced validation ===
-      if (
-        !customerName?.trim() ||
-        !customerPhone?.trim() ||
-        !inquiryType?.trim() ||
-        !details?.trim()
-      ) {
+      // === Validation ===
+      if (!customerName.trim() || !customerPhone.trim() || !inquiryType.trim() || !details.trim()) {
         return res.status(400).json({ message: 'All required fields must be filled out.' });
       }
 
-      // === File upload validation ===
       const uploadedFiles = Array.isArray(files.files)
         ? files.files
         : files.files
@@ -195,8 +189,14 @@ const forwardTo = fields.forwardTo?.[0] || null;
         return res.status(400).json({ message: 'At least one attachment is required.' });
       }
 
-      const maxFileSize = 10 * 1024 * 1024; // 10MB
-      const allowedTypes = ['image/png', 'image/jpeg', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+      const maxFileSize = 10 * 1024 * 1024;
+      const allowedTypes = [
+        'image/png',
+        'image/jpeg',
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      ];
 
       for (const file of uploadedFiles) {
         if (!allowedTypes.includes(file.mimetype)) {
@@ -207,8 +207,8 @@ const forwardTo = fields.forwardTo?.[0] || null;
         }
       }
 
+      // === Assignment Logic ===
       let assignedTo;
-
       if (forwardTo) {
         const [departments] = await pool.query(
           'SELECT id FROM users WHERE department = ? AND role = "complaints_handler" LIMIT 1',
@@ -221,7 +221,6 @@ const forwardTo = fields.forwardTo?.[0] || null;
 
         assignedTo = departments[0].id;
       } else {
-  
         const inquiryMap = {
           'Technical Issue': 'IT Department',
           'Forgotten Password': 'IT Department',
@@ -229,7 +228,6 @@ const forwardTo = fields.forwardTo?.[0] || null;
           'Financial Transaction': 'Funds Administration',
           'Repurchase Issue': 'Finance & Accounting',
           'Financial Approval': 'Finance & Accounting',
-          
         };
 
         const department = inquiryMap[inquiryType.trim()] || 'IT Department';
@@ -246,7 +244,7 @@ const forwardTo = fields.forwardTo?.[0] || null;
         assignedTo = handlers[0].id;
       }
 
-      
+      // === Insert Complaint ===
       const [result] = await pool.query(
         `INSERT INTO complaints (
           customer_name,
@@ -277,36 +275,24 @@ const forwardTo = fields.forwardTo?.[0] || null;
       );
 
       const complaintId = result.insertId;
+
+      // === Upload Files to Cloudinary ===
       for (const file of uploadedFiles) {
-        // Sanitize original filename and remove extension
         const originalName = file.originalFilename.replace(/\.[^/.]+$/, '');
         const ext = file.originalFilename.split('.').pop();
-      
-        // Generate public ID without double extension
         const publicId = `complaints/${uuidv4()}-${originalName}`;
-      
-        // Set correct resource type based on MIME type
-        let resourceType = 'auto';
-        if (file.mimetype.startsWith('image/')) {
-          resourceType = 'image';
-        } else if (
-          file.mimetype === 'application/pdf' ||
-          file.mimetype === 'application/msword' ||
-          file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        ) {
-          resourceType = 'raw'; 
-        }
-      
-        const result = await cloudinary.uploader.upload(file.filepath, {
+
+        let resourceType = file.mimetype.startsWith('image/')
+          ? 'image'
+          : 'raw';
+
+        const uploadResult = await cloudinary.uploader.upload(file.filepath, {
           resource_type: resourceType,
           public_id: publicId,
           use_filename: true,
           unique_filename: false,
         });
-      
-        const url = result.secure_url;
-      
-        // Save to database
+
         await pool.query(
           `INSERT INTO attachments (
             complaint_id,
@@ -322,52 +308,65 @@ const forwardTo = fields.forwardTo?.[0] || null;
             file.originalFilename,
             file.mimetype,
             file.size,
-            url,
+            uploadResult.secure_url,
           ]
         );
-      
-        // Cleanup temp file
-        fs.unlinkSync(file.filepath);
-      }
-      
 
-      await pool.query(
-        `INSERT INTO notifications (
-          user_id,
-          title,
-          message,
-          type,
-          \`read\`
-        ) VALUES (?, ?, ?, ?, ?)`,
-        [
-          assignedTo,
-          'New Complaint Assigned',
-          `You have been assigned a new complaint from ${customerName.trim()} regarding ${inquiryType.trim()}.`,
-          'assignment',
-          0,
-        ]
+        // Delete temp file
+        fs.unlink(file.filepath, (err) => {
+          if (err) console.error("File cleanup error:", err);
+        });
+      }
+
+      // === Notify Assigned Handler ===
+      const [handlerRow] = await pool.query(
+        "SELECT name, email, department FROM users WHERE id = ?",
+        [assignedTo]
       );
 
-      const [handlerData] = await pool.query('SELECT department FROM users WHERE id = ?', [assignedTo]);
+      if (handlerRow.length > 0) {
+        const handler = handlerRow[0];
 
-      res.status(201).json({
-        id: complaintId,
-        message: `Complaint registered successfully and forwarded to ${handlerData[0].department}.`,
-      });
+        await emailService.notifyHandlerAssignment({
+          handlerEmail: handler.email,
+          handlerName: handler.name,
+          complaintId,
+          customerName,
+          inquiryType,
+          department: handler.department,
+        });
+      }
 
+      return res.status(201).json({ message: 'Complaint submitted successfully', complaintId });
     } catch (error) {
       console.error('Create complaint error:', error);
-      res.status(500).json({ message: 'Server error' });
+
+      // Cleanup files if error occurs
+      const uploadedFiles = Array.isArray(files.files)
+        ? files.files
+        : files.files
+        ? [files.files]
+        : [];
+
+      for (const file of uploadedFiles) {
+        if (file?.filepath) {
+          fs.unlink(file.filepath, (err) => {
+            if (err) console.error("Error cleaning up temp file:", err);
+          });
+        }
+      }
+
+      return res.status(500).json({ message: 'Server error' });
     }
   });
 };
 
+
 exports.updateComplaint = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, resolution } = req.body;
+    const { status, resolution, forwardTo } = req.body;
 
-  
     if (!status) {
       return res.status(400).json({ message: "Status is required" });
     }
@@ -394,16 +393,25 @@ exports.updateComplaint = async (req, res) => {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    // If CRO resolves directly, don't forward
+    // Update logic
     if (req.user.role === "customer_relations_officer" && status === "Resolved") {
+      // CRO resolves and unassigns
       await pool.query(
         `UPDATE complaints 
          SET status = ?, resolution = ?, updated_at = NOW(), assigned_to = NULL 
          WHERE id = ?`,
         [status, resolution, id]
       );
+    } else if (forwardTo) {
+      // Forwarding logic
+      await pool.query(
+        `UPDATE complaints 
+         SET status = ?, resolution = ?, updated_at = NOW(), assigned_to = ? 
+         WHERE id = ?`,
+        [status, resolution || null, forwardTo, id]
+      );
     } else {
-      // Generic update (handlers/admins)
+      // Generic update
       await pool.query(
         `UPDATE complaints 
          SET status = ?, resolution = ?, updated_at = NOW() 
@@ -412,10 +420,11 @@ exports.updateComplaint = async (req, res) => {
       );
     }
 
-    // Notification logic
+    // Get current user's department
     const [userDetails] = await pool.query("SELECT department FROM users WHERE id = ?", [req.user.id]);
     const userDepartment = userDetails.length > 0 ? userDetails[0].department : "Department";
 
+    // Insert system notification
     if (status === "Resolved") {
       await pool.query(
         `INSERT INTO notifications (user_id, title, message, type, \`read\`) 
@@ -432,8 +441,38 @@ exports.updateComplaint = async (req, res) => {
       await pool.query(
         `INSERT INTO notifications (user_id, title, message, type, \`read\`) 
          VALUES (?, ?, ?, ?, ?)`,
-        [complaint.created_by, "Complaint Updated", `Complaint #${id} status updated to In Progress.`, "update", 0]
+        [
+          complaint.created_by,
+          "Complaint Updated",
+          `Complaint #${id} status updated to In Progress.`,
+          "update",
+          0,
+        ]
       );
+    }
+
+    // Email: get creator info
+    const [creatorRow] = await pool.query(
+      "SELECT email, name FROM users WHERE id = ?",
+      [complaint.created_by]
+    );
+
+    // Email: get department
+    const [deptRow] = await pool.query(
+      "SELECT department FROM users WHERE id = ?",
+      [req.user.id]
+    );
+
+    // Send email notification to complaint creator
+    if (creatorRow.length > 0) {
+      await emailService.notifyCreatorStatusChange({
+        creatorEmail: creatorRow[0].email,
+        creatorName: creatorRow[0].name,
+        complaintId: id,
+        newStatus: status,
+        department: deptRow.length ? deptRow[0].department : "N/A",
+        resolution: status === "Resolved" ? resolution : "",
+      });
     }
 
     res.json({ message: "Complaint updated successfully" });
@@ -442,7 +481,6 @@ exports.updateComplaint = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
-
 
 
 exports.deleteComplaint = async (req, res) => {

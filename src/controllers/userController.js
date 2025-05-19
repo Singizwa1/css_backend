@@ -46,7 +46,7 @@ exports.createUser = async (req, res) => {
     }
 
     // Check if email ends with rnit.rw
-    if (!email.endsWith('rnit.rw')) {
+    if (!email.endsWith('gmail.com')) {
       return res.status(400).json({ message: 'Email must end with rnit.rw domain' });
     }
 
@@ -91,11 +91,11 @@ exports.updateUser = async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Check if email is being updated and if it's already in use
+    
     if (email && email !== users[0].email) {
-      // Check if email ends with rnit.rw
-      if (!email.endsWith('rnit.rw')) {
-        return res.status(400).json({ message: 'Email must end with rnit.rw domain' });
+      
+      if (!email.endsWith('gmail.com')) {
+        return res.status(400).json({ message: 'Email must end with gmail.com domain' });
       }
 
       const [existingUsers] = await pool.query('SELECT * FROM users WHERE email = ? AND id != ?', [email, id]);
@@ -115,7 +115,7 @@ exports.updateUser = async (req, res) => {
       updateData.password = await bcrypt.hash(password, salt);
     }
 
-    // Update user
+    
     if (Object.keys(updateData).length > 0) {
       const columns = Object.keys(updateData).map(key => `${key} = ?`).join(', ');
       const values = Object.values(updateData);
@@ -126,7 +126,7 @@ exports.updateUser = async (req, res) => {
       );
     }
 
-    // Get updated user
+    
     const [updatedUser] = await pool.query(
       'SELECT id, name, email, role, department, created_at, updated_at FROM users WHERE id = ?',
       [id]
@@ -174,16 +174,15 @@ exports.changePassword = async (req, res) => {
     if (users.length === 0) {
       return res.status(404).json({ message: 'User not found' });
     }
-
     const user = users[0];
 
-    // Compare current password
+  
     const isMatch = await bcrypt.compare(currentPassword, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: 'Current password is incorrect' });
     }
 
-    // Hash new password
+  
     const salt = await bcrypt.genSalt(10);
     const hashedNewPassword = await bcrypt.hash(newPassword, salt);
 
